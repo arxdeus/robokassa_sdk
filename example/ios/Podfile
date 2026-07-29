@@ -30,15 +30,9 @@ flutter_ios_podfile_setup
 target 'Runner' do
   use_frameworks!
 
-  # --- Robokassa iOS SDK (consumer-side setup) -------------------------------
-  #
-  # robokassa_sdk's podspec declares `s.dependency 'RobokassaSDK'` but cannot
-  # say where it comes from: Robokassa does not publish RobokassaSDK to the
-  # CocoaPods trunk, and only a Podfile may name an external source. This line
-  # supplies it. Without it CocoaPods fails with:
-  #     [!] Unable to find a specification for `RobokassaSDK`
-  pod 'RobokassaSDK', :git => 'https://github.com/robokassa/sdk-ios.git', :tag => '1.0.0'
-
+  # No Robokassa-specific setup here on purpose: robokassa_sdk vendors
+  # Robokassa's iOS SDK into its own source_files, so there is no separate
+  # `RobokassaSDK` pod to resolve. Adding one back would duplicate every symbol.
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
 
   target 'RunnerTests' do

@@ -32,7 +32,3 @@ migrate_working_dir/
 /build/
 /coverage/
 
-# Robokassa native SDKs fetched by dart run robokassa_sdk:fetch_native_sdks`r
-native/
-example/native/
-

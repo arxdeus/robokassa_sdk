@@ -24,25 +24,3 @@ plugins {
 }
 
 include(":app")
-
-// --- Robokassa Android SDK (consumer-side setup) -----------------------------
-//
-// robokassa_sdk does not bundle Robokassa's Android library, because Robokassa
-// publishes https://github.com/robokassa/sdk-android as source rather than as a
-// Maven artifact. Fetch it with:
-//
-//     dart run robokassa_sdk:fetch_native_sdks       (from the example folder)
-//
-// which clones the SDK into `example/native/sdk-android`. The block below wires
-// that checkout in when it is present, and stays quiet when it is not so that
-// `flutter pub get` still works on a fresh clone.
-val robokassaLibrary = file("../native/sdk-android/Robokassa_Library")
-if (robokassaLibrary.isDirectory) {
-    include(":Robokassa_Library")
-    project(":Robokassa_Library").projectDir = robokassaLibrary
-} else {
-    logger.warn(
-        "robokassa_sdk: ${robokassaLibrary.path} not found — run " +
-            "`dart run robokassa_sdk:fetch_native_sdks` before building for Android."
-    )
-}
