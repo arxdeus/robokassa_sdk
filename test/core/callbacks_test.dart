@@ -14,8 +14,47 @@ void main() {
   const successSignature = 'be54f986c8176fccc857921adf11c3fb';
   // Externally computed: md5("11.00:5:password_2:shp_a=1:shp_b=2")
   const resultSignatureWithShp = '01ed33740ec749aea4f4c494d3da4ebb';
+  // Externally computed: md5("100.000000:7:password_2")
+  const sixDecimalSignature = '1a28022ddbef9ce98e0c2e4ee2949ea3';
 
   group('ResultURL', () {
+    test('the six-decimal OutSum production sends verifies', () {
+      // Robokassa formats OutSum with six decimals in production. The
+      // signature is over the literal text, so a reparse-and-reformat
+      // anywhere in the path would break verification here.
+      final callback = RobokassaCallback.parse(
+        const <String, String>{
+          'OutSum': '100.000000',
+          'InvId': '7',
+          'SignatureValue': sixDecimalSignature,
+        },
+        kind: RobokassaCallbackKind.result,
+        credentials: credentials,
+      );
+
+      expect(callback.isConfirmedPayment, isTrue);
+      expect(callback.outSumRaw, '100.000000');
+      expect(callback.outSum, 100.0);
+      expect(callback.acknowledgement, 'OK7');
+    });
+
+    test('a six-decimal OutSum is not re-formatted before hashing', () {
+      // Same amount, two-decimal text: a different pre-image, so the
+      // six-decimal signature must NOT verify against it.
+      final callback = RobokassaCallback.parse(
+        const <String, String>{
+          'OutSum': '100.00',
+          'InvId': '7',
+          'SignatureValue': sixDecimalSignature,
+        },
+        kind: RobokassaCallbackKind.result,
+        credentials: credentials,
+      );
+
+      expect(callback.isSignatureValid, isFalse);
+      expect(callback.isConfirmedPayment, isFalse);
+    });
+
     test('a correctly signed notification verifies', () {
       final callback = RobokassaCallback.parse(
         const <String, String>{
