@@ -3,8 +3,28 @@
       No `package` attribute: AGP 8+ takes the namespace from build.gradle.kts
       and fails the build if it is declared here as well.
 
-      The INTERNET permission and the `RobokassaActivity` declaration come from
-      Robokassa's own library manifest, which the consumer supplies (see the
-      README's installation section) and which the manifest merger folds in.
+      Everything below is folded in from Robokassa's own library manifest, which
+      this plugin now vendors (see src/main/kotlin/com/robokassa/library/VENDORED.md).
+      `.view.RobokassaActivity` resolves against the module namespace,
+      `com.robokassa.library`.
     -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
+    <!--
+      usesCleartextTraffic is kept as upstream sets it. Every URL the SDK itself
+      owns is https, but the checkout WebView hands off to acquirer / 3-D Secure
+      pages and to the merchant's own `redirectUrl`, none of which this plugin
+      controls; one plain-http hop there dies as ERR_CLEARTEXT_NOT_PERMITTED in
+      the middle of a payment. A library cannot narrow this to a domain list
+      without shipping a networkSecurityConfig that would clobber the app's own.
+      An app that has deliberately hardened this off can win the merge with
+      `tools:replace="android:usesCleartextTraffic"` on its own <application>.
+    -->
+    <application android:usesCleartextTraffic="true">
+        <activity
+            android:name=".view.RobokassaActivity"
+            android:exported="false" />
+    </application>
 </manifest>
