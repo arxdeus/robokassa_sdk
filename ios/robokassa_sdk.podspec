@@ -15,21 +15,16 @@ official iOS SDK.
   s.license          = { :file => '../LICENSE' }
   s.author           = { 'Robokassa' => 'support@robokassa.ru' }
   s.source           = { :path => '.' }
-  s.source_files = 'robokassa_sdk/Sources/robokassa_sdk/**/*'
+  # Robokassa's iOS SDK is vendored under Sources/robokassa_sdk/RobokassaSDK and
+  # compiled straight into this target — it is not on the CocoaPods trunk, and a
+  # podspec cannot point a `dependency` at a git source. See that directory's
+  # VENDORED.md for the upstream commit and the local modifications.
+  s.source_files = 'robokassa_sdk/Sources/robokassa_sdk/**/*.swift'
+  s.resources = ['robokassa_sdk/Sources/robokassa_sdk/RobokassaSDK/AssetsResources/ic_robokassa_loader.png']
+  s.resource_bundles = {
+    'robokassa_sdk_privacy' => ['robokassa_sdk/Sources/robokassa_sdk/PrivacyInfo.xcprivacy']
+  }
   s.dependency 'Flutter'
-
-  # Robokassa's iOS SDK.
-  #
-  # It is NOT published to the CocoaPods trunk, so a podspec cannot point at its
-  # source — only a Podfile can. Your app must therefore declare where it comes
-  # from, in `ios/Podfile`, inside the Runner target:
-  #
-  #   pod 'RobokassaSDK', :git => 'https://github.com/robokassa/sdk-ios.git', :tag => '1.0.0'
-  #
-  # CocoaPods then resolves this dependency against that external source. Without
-  # it you will see:
-  #   [!] Unable to find a specification for `RobokassaSDK`
-  s.dependency 'RobokassaSDK'
 
   # Robokassa's iOS SDK requires iOS 14.
   s.platform = :ios, '14.0'

@@ -1,8 +1,11 @@
 import Flutter
 import UIKit
-import RobokassaSDK
 
 /// Bridges Flutter to Robokassa's official iOS SDK.
+///
+/// That SDK is vendored into this same module under `RobokassaSDK/` rather than
+/// linked as a separate pod, so there is no `import RobokassaSDK` — see
+/// `RobokassaSDK/VENDORED.md`.
 ///
 /// The SDK's `Robokassa` class presents its own `WebViewController` on top of
 /// whatever is frontmost — under Flutter that is the `FlutterViewController` —
@@ -28,7 +31,7 @@ public class RobokassaSdkPlugin: NSObject, FlutterPlugin, RobokassaHostApi {
   // ---------------------------------------------------------------------------
 
   public func isNativeSdkAvailable() throws -> Bool {
-    // Reaching this line means `import RobokassaSDK` linked successfully.
+    // The SDK is compiled into this module, so it cannot be absent.
     return true
   }
 
@@ -68,10 +71,18 @@ public class RobokassaSdkPlugin: NSObject, FlutterPlugin, RobokassaHostApi {
       password2: request.credentials.password2,
       isTesting: request.credentials.isTest)
 
+    // Asked for on the success path so the result carries Robokassa's real
+    // `<Result><Code>`/`<State><Code>`, as the Android SDK's success already
+    // does. Skipped without an invoice: `checkPaymentParams` omits `invoiceID`
+    // then, and the service has nothing to answer for.
+    let checkBody = params.order.invoiceId > 0
+      ? RobokassaSdkPlugin.makeCheckStatusBody(request, params)
+      : nil
+
     let session = PaymentSession(
       robokassa: robokassa,
       invoiceId: request.order.invoiceId,
-      isHold: request.mode == .hold
+      checkBody: checkBody
     ) { [weak self] result in
       self?.session = nil
       completion(.success(result))
@@ -130,18 +141,131 @@ public class RobokassaSdkPlugin: NSObject, FlutterPlugin, RobokassaHostApi {
     request: RkPaymentRequest,
     completion: @escaping (Result<RkPaymentResultMessage, Error>) -> Void
   ) {
-    // Robokassa's iOS SDK exposes no headless state query that exists in both
-    // its CocoaPods and SwiftPM layouts: the pod-only
-    // `ServiceCheckPaymentStatus` reads its parameters from `UserDefaults`
-    // written by a previous checkout, so it cannot answer for an arbitrary
-    // invoice. Dart recognises this code and falls back to
-    // `RobokassaApi.getPaymentState`, which calls the same `OpStateExt`
-    // endpoint and returns strictly more detail.
-    completion(.failure(PigeonError(
-      code: "unsupported_on_ios",
-      message: "Native payment-state queries are unavailable on iOS; "
-        + "robokassa_sdk falls back to its Dart implementation.",
-      details: nil)))
+    // Deliberately *not* routed through the SDK's `ServiceCheckPaymentStatus`,
+    // whose `checkPaymentStatus()` rebuilds its request body from a
+    // `UserDefaults` key written by the last checkout — it would answer for
+    // whichever invoice was paid most recently, not the one asked about, and a
+    // wrong payment status is worse than no status. Its transport underneath,
+    // `RequestManager.requestForCheckStatus`, takes the body as an argument and
+    // has no such coupling, so this builds the body from *this* request and
+    // calls that directly.
+    let params: PaymentParams
+    do {
+      params = try RobokassaSdkPlugin.makePaymentParams(request)
+    } catch {
+      completion(.failure(error))
+      return
+    }
+
+    // Both hoisted so the task below closes over nothing but `Sendable` values.
+    let body = RobokassaSdkPlugin.makeCheckStatusBody(request, params)
+    let invoiceId = request.order.invoiceId
+
+    Task { @MainActor in
+      do {
+        let codes = try await RobokassaSdkPlugin.queryStateCodes(body: body)
+        completion(.success(RobokassaSdkPlugin.makeStateResult(
+          invoiceId: invoiceId,
+          resultCode: codes.result,
+          stateCode: codes.state)))
+      } catch {
+        completion(.failure(PigeonError(
+          code: "robokassa_native_error",
+          message: error.localizedDescription,
+          details: nil)))
+      }
+    }
+  }
+
+  /// The `MerchantLogin:invoiceID:Password2` body for *this* request's invoice.
+  ///
+  /// `checkPaymentParams` signs with password #2, which the SDK's own entry
+  /// points inject; reaching the transport directly means doing it here.
+  fileprivate static func makeCheckStatusBody(
+    _ request: RkPaymentRequest,
+    _ params: PaymentParams
+  ) -> String {
+    var query = params
+    query.merchantLogin = request.credentials.merchantLogin
+    query.password2 = request.credentials.password2
+    return query.checkPaymentParams
+  }
+
+  /// Robokassa's `<Result><Code>` and `<State><Code>` from one `OpStateExt` answer.
+  fileprivate struct StateCodes {
+    let result: String?
+    let state: String?
+  }
+
+  /// Queries the payment-state service for `body`, bounded by a timeout.
+  ///
+  /// The bound matters: this also runs on the checkout's success path, where
+  /// `URLSession`'s own 60s default would leave the Dart `await` pending long
+  /// after the user is back in the app.
+  fileprivate static func queryStateCodes(
+    body: String,
+    timeoutNanoseconds: UInt64 = 15_000_000_000
+  ) async throws -> StateCodes {
+    try await withThrowingTaskGroup(of: StateCodes?.self) { group in
+      // `RequestManager.shared` is main-actor isolated.
+      group.addTask { @MainActor in
+        let xml = try await RequestManager.shared.requestForCheckStatus(to: body)
+        return StateCodes(
+          result: RequestManager.shared.getStateCode(from: xml, "Result"),
+          state: RequestManager.shared.getStateCode(from: xml, "State"))
+      }
+      group.addTask {
+        try await Task.sleep(nanoseconds: timeoutNanoseconds)
+        return nil
+      }
+      // Whichever finishes first wins; the loser is cancelled and its result
+      // discarded as the group drains on the way out.
+      defer { group.cancelAll() }
+      guard let codes = try await group.next() ?? nil else {
+        throw MessagedError(
+          message: "Timed out waiting for the Robokassa payment-state service.")
+      }
+      return codes
+    }
+  }
+
+  /// Classifies an `OpStateExt` `<Result><Code>` / `<State><Code>` pair, matching
+  /// how the Dart fallback maps the same endpoint.
+  private static func makeStateResult(
+    invoiceId: Int64?,
+    resultCode: String?,
+    stateCode: String?
+  ) -> RkPaymentResultMessage {
+    guard resultCode == "0" else {
+      // Robokassa refused the query itself (bad signature, unknown invoice, …);
+      // there is no payment state to report.
+      let reason = PaymentResult(rawValue: resultCode ?? "") ?? .notFound
+      return RkPaymentResultMessage(
+        outcome: .error,
+        invoiceId: invoiceId,
+        resultCode: resultCode,
+        stateDescription: reason.title,
+        errorMessage: reason.title)
+    }
+
+    let state = PaymentState(rawValue: stateCode ?? "") ?? .notFound
+    let outcome: RkPaymentOutcome
+    switch state {
+    case .paymentSuccess, .holdSuccess:
+      outcome = .success
+    case .cancelledNotPaid:
+      outcome = .canceled
+    default:
+      outcome = .error
+    }
+
+    return RkPaymentResultMessage(
+      outcome: outcome,
+      invoiceId: invoiceId,
+      resultCode: resultCode,
+      stateCode: stateCode,
+      stateDescription: state.title,
+      errorMessage: outcome == .error ? state.title : nil)
   }
 
   // ---------------------------------------------------------------------------
@@ -194,15 +318,27 @@ public class RobokassaSdkPlugin: NSObject, FlutterPlugin, RobokassaHostApi {
     // an argument list.
     let receipt = try makeReceipt(request.order.receipt)
 
+    // Rejected rather than dropped: silently nilling an unrecognised currency
+    // would charge the merchant's default one instead, which a caller could
+    // only discover from their settlement report.
+    var outSumCurrency: Currency?
+    if let raw = request.order.outSumCurrency {
+      guard let parsed = Currency(rawValue: raw.lowercased()) else {
+        throw PigeonError(
+          code: "invalid_arguments",
+          message: "Unknown settlement currency \"\(raw)\".",
+          details: nil)
+      }
+      outSumCurrency = parsed
+    }
+
     var order = OrderParams(
       invoiceId: Int(request.order.invoiceId ?? -1),
       orderSum: request.order.orderSum,
       description: request.order.orderDescription,
       incCurrLabel: request.order.incCurrLabel,
       token: request.order.token,
-      outSumCurrency: request.order.outSumCurrency.flatMap {
-        Currency(rawValue: $0.lowercased())
-      },
+      outSumCurrency: outSumCurrency,
       expirationDate: request.order.expirationDateEpochMs.map {
         Date(timeIntervalSince1970: TimeInterval($0) / 1000.0)
       },
@@ -213,11 +349,20 @@ public class RobokassaSdkPlugin: NSObject, FlutterPlugin, RobokassaHostApi {
     order.isRecurrent = request.order.isRecurrent
     order.isHold = request.order.isHold
 
-    // Annotated rather than inferred: inside a closure the implicit members
-    // `.ru` / `.eng` have no contextual base for the compiler to resolve.
-    let culture: Culture? = request.customer.culture.map { raw -> Culture in
-      // The SDK spells English `eng`, so `en` has to be translated.
-      raw.lowercased() == "ru" ? Culture.ru : Culture.eng
+    // The SDK spells English `eng`, so `en` has to be translated. Anything else
+    // is rejected rather than coerced to English — a typo used to change the
+    // checkout language with no diagnostic.
+    var culture: Culture?
+    if let raw = request.customer.culture {
+      switch raw.lowercased() {
+      case "ru": culture = .ru
+      case "en", "eng": culture = .eng
+      default:
+        throw PigeonError(
+          code: "invalid_arguments",
+          message: "Unknown checkout language \"\(raw)\"; expected \"ru\" or \"en\".",
+          details: nil)
+      }
     }
 
     let customer = CustomerParams(
@@ -304,7 +449,8 @@ public class RobokassaSdkPlugin: NSObject, FlutterPlugin, RobokassaHostApi {
 private final class PaymentSession {
   private let robokassa: Robokassa
   private let invoiceId: Int64?
-  private let isHold: Bool
+  /// Signed `OpStateExt` body for this invoice, or nil if there is none to ask about.
+  private let checkBody: String?
   private let finish: (RkPaymentResultMessage) -> Void
 
   private var settled = false
@@ -313,26 +459,45 @@ private final class PaymentSession {
   init(
     robokassa: Robokassa,
     invoiceId: Int64?,
-    isHold: Bool,
+    checkBody: String?,
     finish: @escaping (RkPaymentResultMessage) -> Void
   ) {
     self.robokassa = robokassa
     self.invoiceId = invoiceId
-    self.isHold = isHold
+    self.checkBody = checkBody
     self.finish = finish
   }
 
   func attachHandlers() {
     robokassa.onSuccessHandler = { [weak self] opKey in
       guard let self, !self.settled else { return }
+      // Set *before* the query below, on the same main-thread turn as the
+      // guard: the SDK's handlers fire again while it is in flight, and this
+      // flag is the only thing making those calls no-ops.
       self.settled = true
-      self.finish(RkPaymentResultMessage(
-        outcome: .success,
-        invoiceId: self.invoiceId,
-        opKey: opKey,
-        resultCode: "0",
-        // A successful hold rests in state 20, an ordinary payment in 100.
-        stateCode: self.isHold ? "20" : "100"))
+      // The SDK's success closure carries nothing but an opaque opKey, so
+      // Robokassa's documented `<Result><Code>`/`<State><Code>` — which the
+      // Android SDK surfaces on its own success — are read from the
+      // payment-state service here. They stay nil if that query fails or times
+      // out: a failed *status lookup* must not demote a payment that actually
+      // succeeded.
+      Task { @MainActor in
+        var codes: RobokassaSdkPlugin.StateCodes?
+        if let body = self.checkBody {
+          do {
+            codes = try await RobokassaSdkPlugin.queryStateCodes(body: body)
+          } catch {
+            print("Robokassa: payment succeeded but its state query failed; "
+              + "resultCode/stateCode will be nil. \(error.localizedDescription)")
+          }
+        }
+        self.finish(RkPaymentResultMessage(
+          outcome: .success,
+          invoiceId: self.invoiceId,
+          opKey: opKey,
+          resultCode: codes?.result,
+          stateCode: codes?.state))
+      }
     }
 
     robokassa.onFailureHandler = { [weak self] reason in

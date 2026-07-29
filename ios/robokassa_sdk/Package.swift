@@ -5,11 +5,9 @@ import PackageDescription
 
 // Swift Package Manager variant of the plugin.
 //
-// Unlike a podspec, SwiftPM *can* name a git source directly, so apps that have
-// opted into Flutter's SwiftPM support need no extra iOS setup — the Robokassa
-// SDK is resolved from GitHub below. Apps still on CocoaPods must add the
-// `pod 'RobokassaSDK', :git => ...` line described in
-// `ios/robokassa_sdk.podspec`.
+// Robokassa's iOS SDK is vendored under Sources/robokassa_sdk/RobokassaSDK and
+// compiled straight into this target, so neither packaging path needs any extra
+// setup by the host app. See that directory's VENDORED.md.
 let package = Package(
     name: "robokassa_sdk",
     platforms: [
@@ -20,26 +18,21 @@ let package = Package(
         .library(name: "robokassa-sdk", targets: ["robokassa_sdk"])
     ],
     dependencies: [
-        .package(name: "FlutterFramework", path: "../FlutterFramework"),
-        .package(url: "https://github.com/robokassa/sdk-ios.git", from: "1.0.0")
+        .package(name: "FlutterFramework", path: "../FlutterFramework")
     ],
     targets: [
         .target(
             name: "robokassa_sdk",
+            // Documentation, not a resource — otherwise SwiftPM warns about an
+            // unhandled file in the target directory.
+            exclude: ["RobokassaSDK/VENDORED.md"],
             dependencies: [
-                .product(name: "FlutterFramework", package: "FlutterFramework"),
-                .product(name: "RobokassaSDK", package: "sdk-ios")
+                .product(name: "FlutterFramework", package: "FlutterFramework")
             ],
             resources: [
-                // If your plugin requires a privacy manifest, for example if it uses any required
-                // reason APIs, update the PrivacyInfo.xcprivacy file to describe your plugin's
-                // privacy impact, and then uncomment these lines. For more information, see
-                // https://developer.apple.com/documentation/bundleresources/privacy_manifest_files
-                // .process("PrivacyInfo.xcprivacy"),
-
-                // If you have other resources that need to be bundled with your plugin, refer to
-                // the following instructions to add them:
-                // https://developer.apple.com/documentation/xcode/bundling-resources-with-a-swift-package
+                .process("PrivacyInfo.xcprivacy"),
+                // Loading spinner shown by the vendored SDK's WebViewController.
+                .process("RobokassaSDK/AssetsResources/ic_robokassa_loader.png")
             ]
         )
     ]
