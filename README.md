@@ -5,10 +5,13 @@ receipts, server-callback verification, and the full native 3‑D Secure checkou
 flow driven by Robokassa's own [Android](https://github.com/robokassa/sdk-android)
 and [iOS](https://github.com/robokassa/sdk-ios) SDKs.
 
+Both native SDKs are **vendored into this package**, so there is no native
+setup: adding the dependency is the whole installation.
+
 The package is three layers, usable together or separately:
 
 | Layer | Class | Runs on |
-|---|---|---|
+| --- | --- | --- |
 | Native checkout | `Robokassa` | Android, iOS |
 | Signing & links | `RobokassaLinkBuilder`, `RobokassaSignature`, `RobokassaCallback` | everywhere, including tests and server-side Dart |
 | Merchant HTTP API | `RobokassaApi` | everywhere |
@@ -17,75 +20,77 @@ The package is three layers, usable together or separately:
 
 ## Installation
 
-> **Read this section fully.** Robokassa publishes its mobile SDKs as GitHub
-> source, not as Maven or CocoaPods artifacts, so a Flutter plugin cannot pull
-> them in on your behalf. Your app supplies them. It is three lines of config
-> and one command.
-
-```yaml
-dependencies:
-  robokassa_sdk: ^0.1.0
-```
-
-Fetch the native SDKs from your app folder (the one holding `android/` and
-`ios/`):
-
 ```bash
-dart run robokassa_sdk:fetch_native_sdks
+flutter pub add robokassa_sdk
 ```
 
-That clones both repositories into `native/`.
+That is all. No Gradle module, no AAR, no Podfile entry — Robokassa's Kotlin
+and Swift sources compile as part of this plugin, on CocoaPods and on Flutter's
+Swift Package Manager alike.
 
-### Android setup
+**Minimum platform versions**, inherited from the native SDKs:
 
-Add to `android/settings.gradle.kts`:
+| Platform | Requirement |
+| --- | --- |
+| Android | `minSdk 24` (Android 7.0) |
+| iOS | 14.0 |
 
-```kotlin
-val robokassaLibrary = file("../native/sdk-android/Robokassa_Library")
-if (robokassaLibrary.isDirectory) {
-    include(":Robokassa_Library")
-    project(":Robokassa_Library").projectDir = robokassaLibrary
-}
-```
+Raise `minSdkVersion` in `android/app/build.gradle.kts` and the iOS deployment
+target in `ios/Podfile` if your app is currently below those.
 
-Requires `minSdk 24` (Robokassa's library targets Android 7.0+).
+### Test mode is not representative
 
-Two alternatives, if a git checkout in your tree does not suit you:
+> Robokassa states this prominently in both native SDK READMEs, and it is worth
+> repeating: **parts of the SDK — closing the payment frame after payment, and
+> returning to your app — work only in production mode.** A payment created
+> with `isTest: true` can therefore leave the checkout screen open even though
+> the payment itself succeeded. Use test mode to check your signatures and
+> parameters; validate the end-to-end flow with a real, small production
+> payment.
 
-* **Pre-built AAR** — drop `Robokassa_Library-release.aar` (from the SDK repo's
-  `app/lib/`) into `android/robokassa/`. The plugin finds it there, and also in
-  `android/app/libs/` and `android/libs/`.
-* **Private Maven mirror** — put the coordinates in `android/gradle.properties`:
-  `robokassa.android.dependency=com.example:robokassa-library:1.0.0`
+### Android: returning from external bank apps
 
-If none of the three is present, the Gradle build stops with a message saying
-exactly this, rather than a wall of unresolved references.
+SBP and SberPay hand the customer off to a bank application. Getting them back
+into *your* app afterwards is the host app's job — the SDK cannot register your
+intent filters for you. Two steps, both outside this package:
 
-### iOS setup
+1. Add to `android/app/src/main/AndroidManifest.xml`, inside your
+   `<activity>` (usually `MainActivity`):
 
-Add to `ios/Podfile`, inside the `Runner` target:
+   ```xml
+   <intent-filter android:autoVerify="true">
+       <action android:name="android.intent.action.VIEW" />
+       <category android:name="android.intent.category.DEFAULT" />
+       <category android:name="android.intent.category.BROWSABLE" />
+       <data android:scheme="robokassa" />
+       <data android:host="open" />
+   </intent-filter>
+   ```
 
-```ruby
-platform :ios, '14.0'   # Robokassa's iOS SDK requires iOS 14
+2. Host two pages on your own web server that bounce back into the app, and set
+   them as **Success URL** and **Fail URL** in the Robokassa dashboard:
 
-target 'Runner' do
-  pod 'RobokassaSDK', :git => 'https://github.com/robokassa/sdk-ios.git', :tag => '1.0.0'
-  # …
-end
-```
+   ```html
+   <html><body><script>
+     document.location.href =
+       "intent://scan/#Intent;scheme=robokassa://open;package=YOUR.APPLICATION.ID;end";
+   </script></body></html>
+   ```
 
-This package's podspec declares `s.dependency 'RobokassaSDK'` but cannot name
-its source — only a Podfile may declare an external source. Omit the line and
-CocoaPods reports `Unable to find a specification for RobokassaSDK`.
+   Replace `YOUR.APPLICATION.ID` with your Android `applicationId`. Robokassa
+   hosts working examples at `https://ipol.ru/webService/robokassa/success.html`
+   and `.../fail.html` for trying the flow before you deploy your own.
 
-Apps using **Swift Package Manager** need no iOS setup: `Package.swift` names
-the git dependency directly.
+Skipping this does not break payment — the money still moves and `ResultURL`
+still fires — the customer just has to switch back to your app by hand.
 
-Verify the wiring at start-up:
+iOS needs no equivalent setup.
+
+### Checking the wiring
 
 ```dart
 if (!await robokassa.isNativeSdkAvailable()) {
-  // The native setup above was skipped, or R8 stripped the library.
+  // Android/iOS only, and only if a shrinker stripped the vendored classes.
 }
 ```
 
@@ -125,7 +130,7 @@ if (result.isSuccess) {
 ### Payment modes
 
 | Call | Flow |
-|---|---|
+| --- | --- |
 | `pay` | Ordinary one-stage payment |
 | `payWithHold` | Authorise and hold; capture later |
 | `confirmHold` / `cancelHold` | Capture or release a hold (no UI) |
@@ -134,12 +139,45 @@ if (result.isSuccess) {
 | `payWithSavedCard` | Charge a card saved by an earlier payment |
 | `checkPaymentState` | Query an invoice's state |
 
-A held payment returns `result.isHeld == true`; capture it with `confirmHold`
-or release it with `cancelHold`. An uncaptured hold expires on its own after a
-few days.
+Capture a hold with `confirmHold` or release it with `cancelHold`; an
+uncaptured hold expires on its own after a few days. Test the outcome with
+`result.isSuccess`; `result.isHeld` confirms the funds are actually held.
 
 To charge a saved card later, keep `result.opKey` and pass it as
 `OrderParams.token`.
+
+---
+
+## What the native flow cannot do
+
+The native checkout screen is Robokassa's code, and it builds its own request
+body. Three of this package's Dart features therefore do not reach it. Each one
+throws rather than silently changing what you asked for.
+
+**`Shp_` parameters are rejected, not dropped.** Neither native SDK models
+merchant pass-through values, so `pay` and friends throw `ArgumentError` when
+`PaymentParams.userParameters` is non-empty. If your reconciliation keys off
+`Shp_orderId`, build the payment with `RobokassaLinkBuilder` (which signs and
+sends them correctly) instead of the native screen.
+
+**`customer.ip` is ignored.** Neither vendored SDK puts `UserIp` on the wire —
+Android's `payPostParams` never reads the field, and the vendored iOS tree does
+not emit it either. Set it and it simply does not travel. `UserIp` *does* work
+through `RobokassaLinkBuilder` and `RobokassaApi`, where it is sent as an
+unsigned parameter. It is **not** part of `SignatureValue` on any path.
+
+**Fractional receipt quantities are rejected.** Both native SDKs type receipt
+quantity as a 32-bit integer. The bridge throws rather than truncate a fiscal
+document; `RobokassaLinkBuilder` handles them.
+
+**State codes can be `null` even on success.** Both platforms normally report
+the real `requestResult` and `stateCode` after checkout. Android reads them
+from its SDK; iOS queries the payment-state service for that invoice once
+checkout succeeds, because its SDK's success callback carries only an opaque
+`opKey`. If that lookup fails or times out, both codes come back `null` while
+`isSuccess` stays `true` — a failed *status lookup* must never demote a payment
+that actually went through. So branch on `result.isSuccess`, treat the codes as
+extra detail, and call `checkPaymentState` if you need them and they are absent.
 
 ---
 
@@ -164,7 +202,7 @@ return Response.ok(callback.acknowledgement);   // "OK1042"
 ```
 
 | Callback | Signed with | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | `ResultURL` | password #2 | **Authoritative.** Fulfil here. |
 | `SuccessURL` | password #1 | Browser redirect. Show a thank-you page only. |
 | `FailURL` | *unsigned* | UI only. Never mutate order state. |
@@ -219,7 +257,7 @@ log it in production).
 only the modifiers Robokassa documents, in this fixed order, with absent ones
 omitted entirely rather than left as empty slots:
 
-```
+```text
 Receipt → StepByStep → ResultUrl2 → SuccessUrl2 → SuccessUrl2Method
         → FailUrl2 → FailUrl2Method → Token → Password#1 → Shp_*
 ```
@@ -254,16 +292,17 @@ no `package:crypto` implementation; if your shop uses it, take
 
 ## Known limitations
 
-* **Fractional receipt quantities** cannot go through the native flow — both
-  native SDKs type quantity as a 32-bit integer. `RobokassaLinkBuilder`
-  supports them; the bridge throws `ArgumentError` rather than silently
-  truncating a fiscal document.
-* **`checkPaymentState` on iOS** falls back to the Dart HTTP implementation.
-  Robokassa's iOS SDK exposes no headless state query present in both its
-  CocoaPods and SwiftPM layouts. The result is identical.
+* **`Shp_` parameters, `customer.ip` and fractional receipt quantities** do not
+  work through the native checkout screen — see "What the native flow cannot
+  do" above.
+* **`checkPaymentState`** runs natively on both platforms and returns the real
+  result/state codes, but less detail than `RobokassaApi.getPaymentState`,
+  which also gives amounts, payment method, timestamps and `opKey`.
 * **RIPEMD‑160** is not implemented (see above).
 * **Test mode and `OpStateExt`**: operations created with `IsTest=1` are not
   visible to the state web service.
+* **Test mode and the checkout screen**: frame-close and return-to-app are
+  production-only, per Robokassa — see "Test mode is not representative".
 
 ---
 
@@ -275,7 +314,6 @@ callback verification.
 
 ```bash
 cd example
-dart run robokassa_sdk:fetch_native_sdks
 flutter run
 ```
 
@@ -283,5 +321,9 @@ flutter run
 
 ## License
 
-MIT. Robokassa's native SDKs are MIT and are fetched from their own
-repositories rather than redistributed here.
+MIT — see [`LICENSE`](LICENSE).
+
+This package redistributes Robokassa's native Android and iOS SDKs, both MIT
+licensed. Their copyright and permission notices, and the directories holding
+the vendored code, are reproduced in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

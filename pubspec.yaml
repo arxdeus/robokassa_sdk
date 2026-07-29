@@ -2,7 +2,8 @@ name: robokassa_sdk
 description: >-
   Robokassa payments for Flutter — signature generation, payment links, fiscal
   receipts, server callback verification, and the full native 3-D Secure
-  checkout flow via the official Robokassa Android and iOS SDKs.
+  checkout flow. Bundles the official Robokassa Android and iOS SDKs, so no
+  native setup is needed.
 version: 0.1.0
 homepage: https://github.com/robokassa/sdk-flutter
 repository: https://github.com/robokassa/sdk-flutter
