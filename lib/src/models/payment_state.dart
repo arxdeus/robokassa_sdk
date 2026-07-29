@@ -123,12 +123,6 @@ enum PaymentStateCode {
   /// `true` when the operation reached a state it will not leave on its own.
   bool get isTerminal => !isPending;
 
-  /// `true` when the outcome is a failure for the merchant.
-  bool get isFailure =>
-      this == PaymentStateCode.cancelledNotPaid ||
-      this == PaymentStateCode.refunded ||
-      this == PaymentStateCode.suspended;
-
   /// Parses a `<State><Code>` value; unknown codes yield `null`.
   static PaymentStateCode? tryParse(String? code) {
     if (code == null) return null;

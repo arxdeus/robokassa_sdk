@@ -47,9 +47,17 @@ class RobokassaPaymentResult {
   final String? opKey;
 
   /// Robokassa's answer to the state *query*, when the SDK reported one.
+  ///
+  /// Reported by both platforms after a checkout, but `null` if the state
+  /// lookup behind it failed or timed out — that never changes [outcome], so a
+  /// successful payment can still arrive with no codes. Always populated by
+  /// `Robokassa.checkPaymentState` and `RobokassaApi.getPaymentState`.
   final RequestResultCode? requestResult;
 
   /// State of the *payment*, when the SDK reported one.
+  ///
+  /// `null` under the same conditions as [requestResult]. Re-query it with
+  /// `Robokassa.checkPaymentState` when you need it and it is absent.
   final PaymentStateCode? stateCode;
 
   /// Robokassa's own message, usually Russian.
@@ -70,6 +78,12 @@ class RobokassaPaymentResult {
   /// `true` when funds were authorised and held rather than captured.
   ///
   /// Follow up with `Robokassa.confirmHold` or `Robokassa.cancelHold`.
+  ///
+  /// Reads [stateCode], which both platforms report after a checkout. That
+  /// code is `null` if its lookup failed, making this `false` even for a
+  /// genuine hold — so branch on [isSuccess] for "did the payment work", and
+  /// use this only to confirm funds are held. `Robokassa.checkPaymentState`
+  /// re-queries the code.
   bool get isHeld => stateCode == PaymentStateCode.holdSuccess;
 
   /// A message suitable for showing to a developer in logs.

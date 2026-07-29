@@ -6,7 +6,6 @@ import 'core/credentials.dart';
 import 'core/payment_link.dart';
 import 'models/payment_params.dart';
 import 'models/payment_result.dart';
-import 'models/payment_state.dart';
 import 'platform/robokassa_platform.dart';
 
 /// The entry point of the Robokassa SDK.
@@ -78,6 +77,10 @@ class Robokassa {
   /// Runs an ordinary one-stage payment in the native checkout screen.
   ///
   /// Completes when the screen closes — successfully, cancelled, or failed.
+  ///
+  /// Throws [ArgumentError] when `params.userParameters` is non-empty: the
+  /// native SDKs cannot carry `Shp_*` values. Use [links] for those.
+  /// `params.customer.ip` is ignored here — see [CustomerParams.ip].
   Future<RobokassaPaymentResult> pay(PaymentParams params) =>
       _platform.startPayment(
         credentials: credentials,
@@ -87,9 +90,17 @@ class Robokassa {
 
   /// Runs a two-stage payment: authorises and **holds** the funds.
   ///
-  /// A successful result has `stateCode == PaymentStateCode.holdSuccess`.
   /// Capture it with [confirmHold] or release it with [cancelHold] — an
   /// uncaptured hold expires on its own, typically within a few days.
+  ///
+  /// Check `result.isSuccess` for "did it work"; `result.isHeld` additionally
+  /// confirms the funds are held. `isHeld` reads the state code, which is
+  /// `null` on the rare occasion its lookup failed — call [checkPaymentState]
+  /// to re-query it then.
+  ///
+  /// Throws [ArgumentError] when `params.userParameters` is non-empty: the
+  /// native SDKs cannot carry `Shp_*` values. Use [links] for those.
+  /// `params.customer.ip` is ignored here — see [CustomerParams.ip].
   Future<RobokassaPaymentResult> payWithHold(PaymentParams params) =>
       _platform.startPayment(
         credentials: credentials,
@@ -101,6 +112,10 @@ class Robokassa {
   ///
   /// Robokassa remembers the card; later charges go through [chargeRecurring]
   /// with this payment's `invoiceId` as `previousInvoiceId`, and need no UI.
+  ///
+  /// Throws [ArgumentError] when `params.userParameters` is non-empty: the
+  /// native SDKs cannot carry `Shp_*` values. Use [links] for those.
+  /// `params.customer.ip` is ignored here — see [CustomerParams.ip].
   Future<RobokassaPaymentResult> payRecurrentFirst(PaymentParams params) =>
       _platform.startPayment(
         credentials: credentials,
@@ -112,6 +127,10 @@ class Robokassa {
   ///
   /// `params.order.token` must be the `opKey` from that payment. The customer
   /// still confirms with CVC2/CVV2, so this shows the checkout screen.
+  ///
+  /// Throws [ArgumentError] when `params.userParameters` is non-empty: the
+  /// native SDKs cannot carry `Shp_*` values. Use [links] for those.
+  /// `params.customer.ip` is ignored here — see [CustomerParams.ip].
   Future<RobokassaPaymentResult> payWithSavedCard(PaymentParams params) =>
       _platform.startPayment(
         credentials: credentials,
@@ -139,13 +158,12 @@ class Robokassa {
 
   /// Queries the state of `params.order.invoiceId`.
   ///
-  /// Uses the native SDK where it offers a headless query (Android) and falls
-  /// back to [RobokassaApi.getPaymentState] where it does not (iOS), so the
-  /// call behaves the same on both platforms.
+  /// Runs natively on both Android and iOS, and reports the real
+  /// `<Result><Code>` and `<State><Code>` Robokassa returned.
   ///
   /// [RobokassaApi.getPaymentState] returns strictly more detail — amounts,
-  /// payment method, timestamps — so prefer it when you need those.
-  Future<RobokassaPaymentResult> checkPaymentState(PaymentParams params) async {
+  /// payment method, timestamps, `opKey` — so prefer it when you need those.
+  Future<RobokassaPaymentResult> checkPaymentState(PaymentParams params) {
     final invoiceId = params.order.invoiceId;
     if (invoiceId == null || invoiceId <= 0) {
       throw ArgumentError(
@@ -154,50 +172,18 @@ class Robokassa {
       );
     }
 
-    try {
-      return await _platform.checkPaymentState(
-        credentials: credentials,
-        params: params,
-      );
-    } on RobokassaNativeException catch (error) {
-      if (error.code != 'unsupported_on_ios') rethrow;
-      return _fromPaymentState(await api.getPaymentState(invoiceId), invoiceId);
-    }
-  }
-
-  static RobokassaPaymentResult _fromPaymentState(
-    PaymentState state,
-    int invoiceId,
-  ) {
-    final PaymentOutcome outcome;
-    if (!state.requestResult.isSuccess) {
-      outcome = PaymentOutcome.error;
-    } else if (state.stateCode.isPaid || state.stateCode.isHeld) {
-      outcome = PaymentOutcome.success;
-    } else if (state.stateCode == PaymentStateCode.cancelledNotPaid) {
-      outcome = PaymentOutcome.canceled;
-    } else {
-      outcome = PaymentOutcome.error;
-    }
-
-    return RobokassaPaymentResult(
-      outcome: outcome,
-      invoiceId: invoiceId,
-      opKey: state.opKey,
-      requestResult: state.requestResult,
-      stateCode: state.stateCode,
-      description: state.description,
-      errorMessage: outcome == PaymentOutcome.error
-          ? (state.description ?? state.stateCode.description)
-          : null,
+    return _platform.checkPaymentState(
+      credentials: credentials,
+      params: params,
     );
   }
 
   /// Whether the native Robokassa SDK is linked into this build.
   ///
-  /// `false` means the consumer-side native setup is missing — see the
-  /// README's installation section. Check this once at start-up to fail with a
-  /// useful message rather than at the customer's first tap on "Pay".
+  /// The native SDKs are vendored into this plugin, so this is `true` on
+  /// Android and iOS unless the build stripped them (an aggressive R8/shrinker
+  /// configuration is the usual cause). It is `false` on every other platform,
+  /// where [links] and [api] still work.
   Future<bool> isNativeSdkAvailable() => _platform.isNativeSdkAvailable();
 
   /// Parses and verifies a callback Robokassa delivered to your server.
