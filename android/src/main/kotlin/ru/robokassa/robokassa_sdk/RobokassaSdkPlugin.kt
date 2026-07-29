@@ -295,12 +295,27 @@ class RobokassaSdkPlugin :
 
     private fun RkPaymentRequest.toPaymentParams(): PaymentParams {
         val request = this
+        // `mode` is never read below — the Dart side bakes the same signal into the
+        // order flags — so assert the two agree rather than let them silently drift.
+        when (mode) {
+            RkPaymentMode.HOLD -> require(request.order.isHold) {
+                "mode=HOLD but order.isHold is false"
+            }
+            RkPaymentMode.RECURRENT -> require(request.order.isRecurrent) {
+                "mode=RECURRENT but order.isRecurrent is false"
+            }
+            RkPaymentMode.SAVED_CARD -> require(!request.order.token.isNullOrEmpty()) {
+                "mode=SAVED_CARD but order.token is empty"
+            }
+            RkPaymentMode.SIMPLE -> Unit
+        }
         return PaymentParams().apply {
             order = OrderParams().apply {
                 orderSum = request.order.orderSum
                 // The SDK treats a non-positive id as "let Robokassa allocate".
-                invoiceId = request.order.invoiceId?.toInt() ?: -1
-                previousInvoiceId = request.order.previousInvoiceId?.toInt() ?: -1
+                invoiceId = request.order.invoiceId.toInvoiceId("invoiceId")
+                previousInvoiceId =
+                    request.order.previousInvoiceId.toInvoiceId("previousInvoiceId")
                 description = request.order.orderDescription
                 incCurrLabel = request.order.incCurrLabel
                 token = request.order.token
@@ -417,4 +432,19 @@ class RobokassaSdkPlugin :
         "sales_tax" -> PaymentObject.SALES_TAX
         else -> throw IllegalArgumentException("Unknown settlement subject \"$wire\"")
     }
+}
+
+/**
+ * Narrows a 64-bit wire invoice id to the native SDK's `Int` field.
+ *
+ * `null` means "let Robokassa allocate", which the SDK spells as a non-positive
+ * id. An out-of-range value throws rather than silently wrapping into a
+ * different — possibly valid — invoice.
+ */
+private fun Long?.toInvoiceId(field: String): Int {
+    if (this == null) return -1
+    require(this in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()) {
+        "$field $this does not fit in the 32-bit id Robokassa's Android SDK accepts"
+    }
+    return toInt()
 }
