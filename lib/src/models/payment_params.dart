@@ -152,7 +152,17 @@ class CustomerParams {
 
   /// Payer's IP address (`UserIp`). Recommended for anti-fraud.
   ///
-  /// When set it becomes part of `SignatureValue`.
+  /// **`UserIp` is not part of `SignatureValue`.** Robokassa's pre-image is
+  /// `MerchantLogin:OutSum:InvId:…:Password#1`, which has no slot for it, so
+  /// `RobokassaLinkBuilder` and `RobokassaApi` send it as an unsigned
+  /// parameter.
+  ///
+  /// **The native checkout ignores it on both platforms.** Neither vendored
+  /// SDK puts `UserIp` on the wire — Android's `ParamsUtils.payPostParams`
+  /// never reads the field, and the vendored iOS tree does not emit it either
+  /// — so setting this has no effect on the native flow. Use
+  /// `RobokassaLinkBuilder` or `RobokassaApi` when the payer IP must reach
+  /// Robokassa.
   final String? ip;
 
   /// Validates the email shape, throwing [ArgumentError] when malformed.
@@ -278,6 +288,12 @@ class PaymentParams {
   final ViewParams view;
 
   /// Merchant-defined `shp_*` parameters echoed back on every callback.
+  ///
+  /// **Not supported by the native checkout flow.** Robokassa's Android and
+  /// iOS SDKs build their own request body and expose no field for `Shp_*`
+  /// values, so `Robokassa.pay` and the other native entry points **throw**
+  /// [ArgumentError] when this is non-empty rather than dropping the values
+  /// silently. `RobokassaLinkBuilder` and `RobokassaApi` support them fully.
   final UserParameters userParameters;
 
   /// Success-redirect URL configured for the shop.

@@ -259,6 +259,25 @@ void main() {
       expect(result.diagnostics, contains('Invalid signature'));
     });
 
+    test('a success with no codes reported stays a success', () async {
+      // Both platforms normally report the codes, but iOS reads them from a
+      // follow-up state query that can fail or time out. When it does, the
+      // codes are left absent rather than fabricated — and a failed *status
+      // lookup* must never demote a payment that actually succeeded.
+      host.result = RkPaymentResultMessage(
+        outcome: RkPaymentOutcome.success,
+        invoiceId: 42,
+        opKey: 'op-key-1',
+      );
+      final result = await robokassa.payWithHold(params(isHold: true));
+
+      expect(result.isSuccess, isTrue);
+      expect(result.requestResult, isNull);
+      expect(result.stateCode, isNull);
+      expect(result.isHeld, isFalse);
+      expect(result.opKey, 'op-key-1');
+    });
+
     test('empty strings from the platform become nulls', () async {
       host.result = RkPaymentResultMessage(
         outcome: RkPaymentOutcome.success,
@@ -307,6 +326,29 @@ void main() {
           ),
         ),
         throwsArgumentError,
+      );
+      expect(host.lastCall, isNull);
+    });
+
+    test('Shp_ parameters are refused rather than silently dropped', () {
+      // The native SDKs have no field for them; vanishing would cost a shop
+      // its reconciliation key with no signal at all.
+      expect(
+        () => robokassa.pay(
+          PaymentParams(
+            order: const OrderParams(orderSum: 10, invoiceId: 1),
+            userParameters: UserParameters(const <String, Object?>{
+              'orderId': 'A-7',
+            }),
+          ),
+        ),
+        throwsA(
+          isA<ArgumentError>().having(
+            (ArgumentError e) => e.toString(),
+            'message',
+            allOf(contains('shp_orderId'), contains('RobokassaLinkBuilder')),
+          ),
+        ),
       );
       expect(host.lastCall, isNull);
     });

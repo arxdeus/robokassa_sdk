@@ -194,6 +194,20 @@ class PigeonRobokassaPlatform extends RobokassaPlatform {
   ) {
     params.validate();
 
+    if (params.userParameters.isNotEmpty) {
+      // Failing loudly beats vanishing: a shop keying reconciliation off
+      // `Shp_orderId` would otherwise lose it with no signal at all.
+      throw ArgumentError.value(
+        params.userParameters.values.keys.join(', '),
+        'userParameters',
+        'Robokassa\'s native Android and iOS SDKs cannot carry Shp_ '
+            'parameters — they build their own request body and expose no '
+            'field for them. Use RobokassaLinkBuilder (or RobokassaApi), '
+            'which does sign and send them, for payments that need Shp_ '
+            'values echoed back on the callback.',
+      );
+    }
+
     if (mode == RobokassaPaymentMode.savedCard &&
         (params.order.token == null || params.order.token!.isEmpty)) {
       throw ArgumentError(

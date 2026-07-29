@@ -218,6 +218,14 @@ class RobokassaApi {
     String? description,
     UserParameters userParameters = UserParameters.empty,
   }) async {
+    if (description != null && description.length > 100) {
+      throw ArgumentError.value(
+        description,
+        'description',
+        'Description must be at most 100 characters '
+            '(got ${description.length})',
+      );
+    }
     final formatted = formatOutSum(outSum);
     final receiptOperand = _receiptOperand(receipt);
     final signature = RobokassaSignature.forRecurring(
